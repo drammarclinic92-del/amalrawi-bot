@@ -1,78 +1,120 @@
+"""
+بوت واتساب عيادة الدكتور عمار - نسخة نهائية مدمجة
+- Flask Webhook (يحل Verification failed)
+- Google Sheet للخدمات والأسعار
+- AI من Groq
+- الشيت: https://docs.google.com/spreadsheets/d/1cCXED4MnPNNqAKdsXFPyhqbM60_AJqE3cQHSkBAj7Ls
+"""
 import os
 import json
-from flask import Flask, request, jsonify
 import requests
+from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# === إعدادات عيادة الدكتور عمار ===
+# ============ الإعدادات - لا تغير PHONE_NUMBER_ID ============
 PHONE_NUMBER_ID = "481608268378548"
 WABA_ID = "5014646897203511"
-ACCESS_TOKEN = os.environ.get("WHATSAPP_TOKEN", "PUT_YOUR_TOKEN_HERE")
-VERIFY_TOKEN = "ammar_clinic_verify_2024"
+SHEET_ID = "1cCXED4MnPNNqAKdsXFPyhqbM60_AJqE3cQHSkBAj7Ls"
 
-# ردود باللهجة العراقية
+# ياخذ التوكن من Render Environment
+WHATSAPP_TOKEN = os.environ.get("WHATSAPP_TOKEN", "")
+VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN", "ammar_clinic_2024")  # نفس اللي بالصورة السابقة
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")  # اختياري - اذا ما عندك يشتغل بدون AI
+APPS_SCRIPT_URL = os.environ.get("APPS_SCRIPT_URL", "")
+
+print(f"Token set: {bool(WHATSAPP_TOKEN)} Verify: {VERIFY_TOKEN}")
+
+# ============ قراءة الشيت ============
+def get_clinic_data():
+    try:
+        services_url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Services_الخدمات"
+        settings_url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Settings_الاعدادات"
+        s = requests.get(services_url, timeout=10).text[:3000]
+        st = requests.get(settings_url, timeout=10).text[:3000]
+        return s, st
+    except Exception as e:
+        print(f"Sheet error: {e}")
+        return "خدمات التجميل متوفرة", "الدوام 3:30-10 مساء الجمعة عطلة"
+
+# ============ إرسال واتساب ============
+def send_whatsapp(to, text):
+    if not WHATSAPP_TOKEN:
+        print("❌ WHATSAPP_TOKEN ماكو!")
+        return
+    url = f"https://graph.facebook.com/v21.0/{PHONE_NUMBER_ID}/messages"
+    headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"}
+    payload = {"messaging_product": "whatsapp", "to": to, "type": "text", "text": {"body": text}}
+    try:
+        r = requests.post(url, headers=headers, json=payload, timeout=15)
+        print(f"SEND {to} -> {r.status_code} {r.text[:400]}")
+        return r.json()
+    except Exception as e:
+        print(f"SEND ERROR: {e}")
+
+# ============ AI - اذا عندك Groq ============
+def ask_ai(user_msg):
+    if not GROQ_API_KEY:
+        return None  # يرجع للردود العادية
+    services, settings = get_clinic_data()
+    prompt = f"""
+أنت موظف استقبال عيادة الدكتور عمار حسين الراوي، تتكلم عراقي مهذب.
+
+بيانات حية من الشيت:
+الخدمات:
+{services}
+
+الاعدادات:
+{settings}
+
+قواعد:
+1. ابدأ بـ أهلا وسهلا بيك في عيادة الدكتور عمار 🌿
+2. اذا سأل عن سعر خذه من الخدمات
+3. لا تشخص طبيا ابدا
+4. انهي بـ دوامنا 15:30-22:00 الجمعة عطلة - 07800540459
+"""
+    try:
+        r = requests.post("https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+            json={
+                "model": "llama-3.1-8b-instant",
+                "messages": [{"role":"system","content":prompt},{"role":"user","content":user_msg}],
+                "temperature":0.3
+            }, timeout=20)
+        return r.json()['choices'][0]['message']['content']
+    except Exception as e:
+        print(f"AI ERROR: {e}")
+        return None
+
+# ============ الردود العادية (اذا ماكو AI) ============
 RESPONSES = {
-    "greeting": """مرحبا حبيبي 🌸
-أنا مساعد عيادة الدكتور عمار حسين الراوي للتجميل
+    "greeting": """أهلاً وسهلاً بيك في عيادة الدكتور عمار حسين الراوي 🌿
 
-شنو تحتاج؟
+أنا المساعد الذكي - أقدر أساعدك ب:
+
 1️⃣ حجز موعد
-2️⃣ استفسار عن الخدمات (فيلر، بوتوكس، ليزر)
-3️⃣ موقع العيادة
+2️⃣ أسعار الخدمات (فيلر، بوتوكس، زراعة)
+3️⃣ موقع العيادة واوقات الدوام
 4️⃣ التحدث مع الموظف
 
-دزلي رقم الخدمة""",
+دزلي رقم الخدمة أو اسألني مباشرة""",
     "booking": """تمام للحجز 🗓️
 دزلي:
 - اسمك الثلاثي
 - الخدمة المطلوبة
-- اليوم اللي يناسبك
+- اليوم والوقت اللي يناسبك
 
-مثال: عمار حسين - فيلر - باجر العصر""",
-    "services": """خدماتنا في عيادة الدكتور عمار 💉✨:
+مثال: عمار حسين - فيلر شفايف - باجر العصر
 
-💎 فيلر شفايف وخدود
-💎 بوتوكس
-💎 بلازما للشعر والبشرة
-💎 ليزر إزالة شعر
-💎 تنظيف بشرة عميق
-💎 ميزوثيرابي
-
-أي خدمة تريد تفاصيل عنها؟""",
-    "location": """📍 موقعنا:
-الرمادي - شارع الأطباء - مجمع الأمل الطبي
-أوقات الدوام: 4 عصراً - 9 مساءً
-للتواصل: 07800540459
-
-تحب احجزلك موعد؟"""
+وراح أثبته إلك فوراً ✅""",
 }
 
-def send_whatsapp(to, text):
-    url = f"https://graph.facebook.com/v21.0/{PHONE_NUMBER_ID}/messages"
-    headers = {
-        "Authorization": f"Bearer {ACCESS_TOKEN}",
-        "Content-Type": "application/json"
-    }
-    data = {
-        "messaging_product": "whatsapp",
-        "to": to,
-        "type": "text",
-        "text": {"body": text}
-    }
-    try:
-        r = requests.post(url, headers=headers, json=data, timeout=10)
-        print(f"SEND {to} -> {r.status_code}: {r.text[:500]}")
-        return r.json()
-    except Exception as e:
-        print(f"SEND ERROR: {e}")
-        return {"error": str(e)}
-
+# ============ Webhook Verification - هذا اللي يحل مشكلتك ============
 @app.route("/webhook", methods=["GET"])
 def verify():
     token = request.args.get("hub.verify_token")
     challenge = request.args.get("hub.challenge")
-    print(f"VERIFY attempt token={token} challenge={challenge}")
+    print(f"VERIFY: token={token} expected={VERIFY_TOKEN} challenge={challenge}")
     if token == VERIFY_TOKEN:
         return challenge, 200
     return "Verification failed", 403
@@ -81,61 +123,68 @@ def verify():
 def webhook():
     try:
         data = request.get_json()
-        print(f"WEBHOOK IN: {json.dumps(data, ensure_ascii=False)[:2000]}")
-        if not data:
-            return jsonify({"status": "no data"}), 200
-
+        print(f"IN: {json.dumps(data, ensure_ascii=False)[:2000]}")
+        if not data: return jsonify(status="no data"), 200
+        
         entry = data.get("entry", [{}])[0]
         changes = entry.get("changes", [{}])[0]
         value = changes.get("value", {})
-
+        
         if "messages" in value:
             msg = value["messages"][0]
             from_number = msg.get("from")
-            msg_type = msg.get("type")
-
-            if msg_type == "text":
-                text = msg.get("text", {}).get("body", "").lower()
+            if msg.get("type") == "text":
+                user_text = msg.get("text", {}).get("body", "")
             else:
-                text = ""
-
-            print(f"FROM {from_number}: {text}")
-
-            if any(w in text for w in ["مرحبا", "هلا", "سلام", "hi", "hello", "السلام"]):
-                reply = RESPONSES["greeting"]
-            elif "1" in text or "حجز" in text or "موعد" in text:
-                reply = RESPONSES["booking"]
-            elif "2" in text or "خدمة" in text or "فيلر" in text or "بوتوكس" in text:
-                reply = RESPONSES["services"]
-            elif "3" in text or "موقع" in text or "عنوان" in text:
-                reply = RESPONSES["location"]
-            elif "4" in text or "موظف" in text:
-                reply = "تمام راح احولك على الموظف، انتظر لحظة 🙏\nراح يتواصل وياك على نفس الرقم"
-            else:
-                reply = RESPONSES["greeting"]
-
+                user_text = "صورة/صوت"
+            
+            print(f"FROM {from_number}: {user_text}")
+            
+            # جرب AI اول
+            reply = ask_ai(user_text)
+            
+            # اذا ماكو AI استخدم الردود العادية
+            if not reply:
+                low = user_text.lower()
+                if any(w in low for w in ["مرحبا","هلا","سلام","hi","hello","أهلا"]):
+                    reply = RESPONSES["greeting"]
+                    # اضف اسعار من الشيت
+                    services, _ = get_clinic_data()
+                    reply += f"\n\n📋 من الشيت:\n{services[:800]}"
+                elif "حجز" in low or "موعد" in low or "1" in low:
+                    reply = RESPONSES["booking"]
+                elif "سعر" in low or "شكد" in low or "فيلر" in low or "بوتوكس" in low or "زراعة" in low:
+                    services, _ = get_clinic_data()
+                    reply = f"أسعارنا الحالية (من الشيت):\n{services[:1500]}\n\nتحب أحجزلك؟"
+                elif "موقع" in low or "عنوان" in low or "وين" in low:
+                    _, settings = get_clinic_data()
+                    reply = f"📍 موقعنا: الرمادي - شارع الأطباء - مجمع الأمل\n{settings[:1000]}"
+                else:
+                    reply = RESPONSES["greeting"]
+            
             if from_number:
                 send_whatsapp(from_number, reply)
-
+                
+                # حفظ الحجز اذا بيه كلمة حجز
+                if APPS_SCRIPT_URL and ("حجز" in user_text or "-" in user_text):
+                    try:
+                        requests.post(APPS_SCRIPT_URL, json={"name":user_text,"phone":from_number,"message":user_text}, timeout=5)
+                    except: pass
+                    
     except Exception as e:
-        print(f"WEBHOOK ERROR: {e}")
-        import traceback
-        traceback.print_exc()
-
-    return jsonify({"status": "ok"}), 200
+        print(f"ERROR: {e}")
+        import traceback; traceback.print_exc()
+    return jsonify(status="ok"), 200
 
 @app.route("/")
 def home():
-    token_set = "✅" if os.environ.get("WHATSAPP_TOKEN") else "❌ ماكو توكن"
-    return f"Bot running {PHONE_NUMBER_ID} - عيادة الدكتور عمار {token_set} - Token: {ACCESS_TOKEN[:20]}..."
+    return f"Bot OK - Phone {PHONE_NUMBER_ID} - Token:{'✅' if WHATSAPP_TOKEN else '❌'} Verify:{VERIFY_TOKEN} - Sheet:{SHEET_ID}"
 
 @app.route("/test")
-def test():
-    to = request.args.get("to")
-    if not to:
-        return "Add?to=9647xxxxxxxx"
-    send_whatsapp(to, "تجربة البوت - عيادة الدكتور عمار ✅")
-    return f"Sent to {to}"
+def test_sheet():
+    s, st = get_clinic_data()
+    return f"<pre>Services:\n{s[:2000]}\n\nSettings:\n{st[:2000]}</pre>"
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT",5000)))
+    
