@@ -1,13 +1,1 @@
-from flask import Flask
-app = Flask(__name__)
-
-@app.route("/")
-def home():
-    return "Bot عيادة امل الراوي شغال"
-
-@app.route("/webhook", methods=["GET", "POST"])
-def webhook():
-    return "ok", 200
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+final_bot_app.py (file unavailable)
