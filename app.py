@@ -15,24 +15,22 @@ def webhook():
         mode = request.args.get('hub.mode')
         token = request.args.get('hub.verify_token')
         challenge = request.args.get('hub.challenge')
-        print(f"[VERIFY ATTEMPT] mode={mode} token={token} challenge={challenge}", flush=True)
+        print(f"[VERIFY] mode={mode} token={token} challenge={challenge}", flush=True)
         if mode == 'subscribe' and token == VERIFY_TOKEN and challenge:
-            print(f"WEBHOOK VERIFIED OK challenge={challenge}", flush=True)
-            response = make_response(challenge, 200)
-            response.mimetype = "text/plain"
-            return response
-        else:
-            print(f"VERIFY FAILED - Expected token {VERIFY_TOKEN} got {token}", flush=True)
-            return 'Verification failed', 403
+            print(f"WEBHOOK VERIFIED OK", flush=True)
+            resp = make_response(challenge, 200)
+            resp.mimetype = "text/plain"
+            return resp
+        print(f"VERIFY FAILED expected={VERIFY_TOKEN} got={token}", flush=True)
+        return 'Verification failed', 403
 
     if request.method == 'POST':
         try:
             data = request.get_json(force=True, silent=True)
-            print(f"[POST RECEIVED] {data}", flush=True)
+            print(f"[POST] {data}", flush=True)
         except Exception as e:
             print(f"[POST ERROR] {e}", flush=True)
         return 'OK', 200
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 10000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
